@@ -1,0 +1,185 @@
+{ 
+
+  "name": "generate_ai_recommendation", 
+
+  "method": "POST", 
+
+  "endpoint": "/api/recommendations/generate", 
+
+  "auth": "JWT_required", 
+
+  "inputs": { 
+
+    "user_id": "uuid|from_jwt|required", 
+
+    "rango_dias": "integer|default:7" 
+
+  }, 
+
+  "internal_queries": { 
+
+    "historial_comidas": { 
+
+      "table": "habits_logs", 
+
+      "filter": "user_id|last_7_records|order_by:log_date_desc", 
+
+      "min_records": 1 
+
+    }, 
+
+    "estado_animo": { 
+
+      "table": "emotional_logs", 
+
+      "filter": "user_id|most_recent", 
+
+      "fields": [ 
+
+        "emotion", 
+
+        "intensity" 
+
+      ], 
+
+      "intensity_range": "integer|min:1|max:10" 
+
+    } 
+
+  }, 
+
+  "external_calls": { 
+
+    "llm_recommendation": { 
+
+      "tool": "openai_llm", 
+
+      "input": "dynamic_prompt|inject:historial_comidas,estado_animo", 
+
+      "timeout_ms": 5000, 
+
+      "log_table": "message_tool_calls", 
+
+      "tool_name": "llm_recommendation" 
+
+    } 
+
+  }, 
+
+  "process": [ 
+
+    "validate_jwt", 
+
+    "extract_user_id_from_token", 
+
+    "query_habits_logs", 
+
+    "query_emotional_logs", 
+
+    "check_min_records|abort_400_if_empty", 
+
+    "build_dynamic_prompt", 
+
+    "call_llm|log_to_message_tool_calls", 
+
+    "validate_llm_response|detect_hallucination|abort_502_if_invalid", 
+
+    "insert_recommendations|source:AI", 
+
+    "log_to_ai_message_logs|role:assistant", 
+
+    "return_response" 
+
+  ], 
+
+  "outputs": { 
+
+    "200": { 
+
+      "status": "success", 
+
+      "body": { 
+
+        "message": "string", 
+
+        "content": "string" 
+
+      }, 
+
+      "persists": [ 
+
+        "recommendations", 
+
+        "ai_message_logs", 
+
+        "message_tool_calls" 
+
+      ] 
+
+    }, 
+
+    "400": { 
+
+      "status": "error", 
+
+      "reason": "insufficient_history", 
+
+      "body": { 
+
+        "message": "string" 
+
+      } 
+
+    }, 
+
+    "401": { 
+
+      "status": "error", 
+
+      "reason": "invalid_jwt" 
+
+    }, 
+
+    "502": { 
+
+      "status": "error", 
+
+      "reason": "llm_unavailable_or_hallucination", 
+
+      "body": { 
+
+        "message": "string" 
+
+      } 
+
+    } 
+
+  }, 
+
+  "business_rules": [ 
+
+    "user_id must come exclusively from JWT, never from request body", 
+
+    "recommendations.source must always be set to AI", 
+
+    "llm call must have a configured timeout to avoid blocking", 
+
+    "hallucination detection required before persisting recommendation", 
+
+    "all external calls must be logged in message_tool_calls" 
+
+  ], 
+
+  "edge_cases": [ 
+
+    "cold_start: no habits_logs records -> abort before calling LLM", 
+
+    "llm_hallucination: irrelevant response -> return 502, do not persist", 
+
+    "llm_timeout: response exceeds timeout_ms -> return 502", 
+
+    "corrupted_input: nonsense food entries in habits_logs -> LLM confusion risk" 
+
+  ] 
+
+} 
